@@ -1,4 +1,3 @@
---> server state
 create database cozy;
 create table LIST_ITEMS (
  name VARCHAR(200),
@@ -14,4 +13,5 @@ ALTER TABLE LIST_ITEMS ALTER COLUMN list SET NOT NULL;
 ALTER TABLE LIST_ITEMS ALTER COLUMN color SET NOT NULL;
 ALTER TABLE LIST_ITEMS ALTER COLUMN decorator SET NOT NULL;
 
+--> server state
 --> local state
