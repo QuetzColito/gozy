@@ -1,0 +1,91 @@
+package main
+
+import (
+	"database/sql"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+)
+
+type Item struct {
+	Name      string `json:"name"`
+	Color     string `json:"color"`
+	Decorator string `json:"decorator"`
+}
+
+func putItems(w http.ResponseWriter, r *http.Request, db *sql.DB) {
+	handleDefault(w, r)
+	body, err := io.ReadAll(r.Body)
+	if RESOLVE_ERROR_HTTP(err, w, "Missing Body", http.StatusBadRequest) {
+		return
+	}
+
+	items := [][]Item{}
+	err = json.Unmarshal(body, &items)
+	if RESOLVE_ERROR_HTTP(err, w, "Body cannot be unmarshalled", http.StatusBadRequest) {
+		return
+	}
+
+	_, err = db.Exec(
+		"DELETE FROM LIST_ITEMS")
+	if RESOLVE_ERROR_HTTP(err, w, "Error Accessing Database", http.StatusInternalServerError) {
+		return
+	}
+
+	for list_index, list := range items {
+		for index, item := range list {
+			_, err = db.Exec(
+				"INSERT INTO LIST_ITEMS (name, index, list, color, decorator) VALUES($1, $2, $3, $4, $5)",
+				item.Name, index, list_index, item.Color, item.Decorator)
+			if RESOLVE_ERROR_HTTP(err, w, "Error Accessing Database", http.StatusInternalServerError) {
+				return
+			}
+		}
+	}
+	io.WriteString(w, "Successfully updated Items")
+}
+
+func getItems(w http.ResponseWriter, r *http.Request, db *sql.DB) {
+	handleDefault(w, r)
+	fmt.Printf("got /items request\n")
+	items := [][]Item{}
+	for i := range 3 {
+		list := []Item{}
+
+		rows, err := db.Query(
+			"SELECT name, color, decorator FROM LIST_ITEMS WHERE list = $1 ORDER BY index", i)
+		if err != nil {
+			http.Error(w, "Error Accessing Database", http.StatusInternalServerError)
+			return
+		}
+
+		for rows.Next() {
+			var item Item
+			err = rows.Scan(&item.Name, &item.Color, &item.Decorator)
+			list = append(list, item)
+		}
+
+		items = append(items, list)
+	}
+
+	json, err := json.Marshal(items)
+	if err != nil {
+		http.Error(w, "Error Accessing Database", http.StatusInternalServerError)
+		return
+	}
+	w.Write(json)
+}
+
+func handleItems(w http.ResponseWriter, r *http.Request, db *sql.DB) {
+	switch r.Method {
+	case http.MethodGet:
+		getItems(w, r, db)
+	case http.MethodPut:
+		putItems(w, r, db)
+	case http.MethodOptions:
+		http.NoBody.WriteTo(w)
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
