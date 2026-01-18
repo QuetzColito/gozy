@@ -14,16 +14,22 @@ import (
 )
 
 func getRoot(w http.ResponseWriter, r *http.Request) {
-	handleDefault(w, r)
 	io.WriteString(w, "This is the backend for quetz.dev!\n")
 }
 
-func handleDefault(w http.ResponseWriter, r *http.Request) {
+func handleDefault(w http.ResponseWriter, r *http.Request) bool {
 	log.Printf("got %s request", r.Pattern)
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With")
 	w.Header().Set("Access-Control-Max-Age", "86400")
+
+	if r.Method == http.MethodOptions {
+		http.NoBody.WriteTo(w)
+		return true
+	} else {
+		return false
+	}
 }
 
 func getEnv() {
@@ -56,15 +62,27 @@ func main() {
 	db := connectToDb()
 	defer db.Close()
 	handleDB := func(pattern string, handler func(w http.ResponseWriter, r *http.Request, Db *sql.DB)) {
-		http.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) { handler(w, r, db) })
+		http.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
+			if handleDefault(w, r) {
+				return
+			}
+			handler(w, r, db)
+		})
+	}
+	handle := func(pattern string, handler func(w http.ResponseWriter, r *http.Request)) {
+		http.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
+			if handleDefault(w, r) {
+				return
+			}
+			handler(w, r)
+		})
 	}
 
-	http.HandleFunc("/", getRoot)
-	http.HandleFunc("/auth", getRoot)
-	http.HandleFunc("/signin", handleSignin)
-	http.HandleFunc("/logout", handleLogout)
-	http.HandleFunc("/register", getRoot)
-	http.HandleFunc("/refresh", handleRefresh)
+	handle("/", getRoot)
+	// handleDB("/login", handleLogin)
+	handle("/logout", handleLogout)
+	handleDB("/user", handleUser)
+	handle("/refresh", handleRefresh)
 	handleDB("/items", handleItems)
 
 	log.Fatal(http.ListenAndServe(":3333", nil))

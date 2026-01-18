@@ -1,7 +1,9 @@
 package main
 
 import (
+	"database/sql"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -14,33 +16,67 @@ type Credentials struct {
 
 var jwtKey []byte
 
-// TODO: Add User to DB
-var users = map[string]string{}
+const (
+	JWT_COOKIE     = "token"
+	REFRESH_COOKIE = "refreshToken"
+)
 
-func handleSignin(w http.ResponseWriter, r *http.Request) {
-	handleDefault(w, r)
-
-	credentials := Credentials{}
-	if !(extractBody(w, r, &credentials)) {
-		return
+// extracts the currently logged in User from the cookies.
+// Refreshes JWT if Necessary and Possible
+func getLoggedInUserId(w http.ResponseWriter, r *http.Request, db *sql.DB) (int, error) {
+	c, err := r.Cookie(JWT_COOKIE)
+	needsTokenRefresh := false
+	if err != nil {
+		c, err = r.Cookie(REFRESH_COOKIE)
+		if err != nil {
+			return -1, err
+		}
+		needsTokenRefresh = true
 	}
 
-	if users[credentials.Username] != credentials.Password {
-		http.Error(w, "Invalid User/Password", http.StatusUnauthorized)
-		return
+	tkn, err := jwt.Parse(c.Value, func(token *jwt.Token) (any, error) {
+		return jwtKey, nil
+	})
+	if !tkn.Valid || err != nil {
+		http.Error(w, "Invalid Token", http.StatusBadRequest)
+		return -1, err
 	}
 
-	createTokens(w, r, 1)
+	userIdString, err := tkn.Claims.GetSubject()
+	if err != nil {
+		http.Error(w, "Token missing Subject", http.StatusBadRequest)
+		return -1, err
+	}
+
+	id, err := strconv.Atoi(userIdString)
+	if err != nil {
+		http.Error(w, "Subject is not a number", http.StatusBadRequest)
+		return -1, err
+	}
+
+	if needsTokenRefresh && userExists(w, db, id) {
+		createTokens(w, id)
+	}
+
+	return id, nil
 }
 
-func createTokens(w http.ResponseWriter, r *http.Request, userId int) {
-	now := time.Now()
-	refreshExpiresAt := now.Add(48 * time.Hour)
+// Checks if a User is still present in the Database
+func userExists(w http.ResponseWriter, db *sql.DB, userId int) bool {
+	row := db.QueryRow("SELECT id FROM users WHERE id = $1;", userId)
+	var id int
+	err := row.Scan(&id)
+	if RESOLVE_ERROR_HTTP(err, w, "Error retrieving User", http.StatusUnauthorized) {
+		return false
+	}
+	return true
+}
 
+func setToken(w http.ResponseWriter, userId int, name string, expiresAt time.Time) {
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, &jwt.RegisteredClaims{
-		Subject:   string(userId),
+		Subject:   strconv.Itoa(userId),
 		Issuer:    "gozy",
-		ExpiresAt: jwt.NewNumericDate(now.Add(5 * time.Minute)),
+		ExpiresAt: jwt.NewNumericDate(expiresAt),
 	})
 	tokenString, err := token.SignedString(jwtKey)
 	if RESOLVE_ERROR_HTTP(err, w, "Error Signing Token", http.StatusInternalServerError) {
@@ -48,29 +84,20 @@ func createTokens(w http.ResponseWriter, r *http.Request, userId int) {
 	}
 
 	http.SetCookie(w, &http.Cookie{
-		Name:     "token",
+		Name:     name,
 		Value:    tokenString,
-		Expires:  refreshExpiresAt,
+		Expires:  expiresAt,
 		Secure:   true,
 		HttpOnly: true,
+		Path:     "/",
 	})
+}
 
-	refreshToken := jwt.NewWithClaims(jwt.SigningMethodHS256, &jwt.RegisteredClaims{
-		Subject:   string(userId),
-		ExpiresAt: jwt.NewNumericDate(refreshExpiresAt),
-	})
-	refreshTokenString, err := refreshToken.SignedString(jwtKey)
-	if RESOLVE_ERROR_HTTP(err, w, "Error Signing Token", http.StatusInternalServerError) {
-		return
-	}
+func createTokens(w http.ResponseWriter, userId int) {
+	now := time.Now()
 
-	http.SetCookie(w, &http.Cookie{
-		Name:     "refresh-token",
-		Value:    refreshTokenString,
-		Expires:  refreshExpiresAt,
-		Secure:   true,
-		HttpOnly: true,
-	})
+	setToken(w, userId, "token", now.Add(5*time.Minute))
+	setToken(w, userId, "refreshToken", now.Add(48*time.Hour))
 }
 
 func handleRefresh(w http.ResponseWriter, r *http.Request) {
@@ -103,22 +130,16 @@ func handleRefresh(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if time.Until(expiresAt.Time) > 0 {
-		createTokens(w, r, 1)
+		createTokens(w, 1)
 	} else {
 		http.Error(w, "Refresh token expired", http.StatusUnauthorized)
 		return
 	}
 }
 
+// Request is unused but kept as an Argument to Match the typical handle-function signature
+// Unsets the Login Cookies
 func handleLogout(w http.ResponseWriter, r *http.Request) {
-	handleDefault(w, r)
-	http.SetCookie(w, &http.Cookie{
-		Name:    "token",
-		Expires: time.Now(),
-	})
-	http.SetCookie(w, &http.Cookie{
-		Name:    "refresh-token",
-		Expires: time.Now(),
-	})
-
+	setToken(w, -1, "token", time.Unix(0, 0))
+	setToken(w, -1, "refreshToken", time.Unix(0, 0))
 }
